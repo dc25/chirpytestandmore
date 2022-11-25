@@ -1,71 +1,71 @@
-name: "Build and Deploy"
+name: 'Automatic build'
 on:
   push:
     branches:
-      - master
       - master
     paths-ignore:
       - .gitignore
       - README.md
       - LICENSE
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-# Allow one concurrent deployment
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
-
 jobs:
-  build:
+  continuous-delivery:
+
     runs-on: ubuntu-latest
+
+    env:
+      GEMS_PATH: ~/vendor/bundle
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v2
         with:
-          fetch-depth: 0
-          # submodules: true
-          # If using the 'assets' git submodule from Chirpy Starter, uncomment above
-          # (See: https://github.com/cotes2020/chirpy-starter/tree/main/assets)
-
-      - name: Setup Pages
-        id: pages
-        uses: actions/configure-pages@v1
+          fetch-depth: 0  # for posts's lastmod
 
       - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
+        uses: actions/setup-ruby@v1
         with:
-          ruby-version: 3 # reads from a '.ruby-version' or '.tools-version' file if 'ruby-version' is omitted
-          bundler-cache: true
+          ruby-version: 2.7
 
-      - name: Build site
-        run: bundle exec jekyll b -d "_site${{ steps.pages.outputs.base_path }}"
-        env:
-          JEKYLL_ENV: "production"
+      - name: Bundle Caching
+        uses: actions/cache@v2
+        with:
+          path: ${{ env.GEMS_PATH }}
+          key: ${{ runner.os }}-gems-${{ hashFiles('**/Gemfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gems-
 
-      - name: Test site
+      - name: Bundle Install
         run: |
-          bundle exec htmlproofer _site --disable-external --check-html --allow_hash_href
+          bundle config path ${{ env.GEMS_PATH }}
+          bundle install --jobs 4 --retry 3
 
-      - name: Upload site artifact
-        uses: actions/upload-pages-artifact@v1
-        with:
-          path: "_site${{ steps.pages.outputs.base_path }}"
+      - name: Check baseurl
+        run: |
+          baseurl="$(grep '^baseurl:' _config.yml | sed "s/.*: *//;s/['\"]//g;s/#.*//")"
+          if [[ -n $baseurl ]]; then
+            echo "SPEC_TEST=_site_no_baseurl" >> $GITHUB_ENV
+          fi
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v1
+      - name: Build Site
+        env:
+          JEKYLL_ENV: production
+        run: |
+          bundle exec jekyll b
+
+          if [[ -n $SPEC_TEST ]]; then
+            # Bypass the defects of htmlproofer
+            bundle exec jekyll b -b "" -d "$SPEC_TEST"
+          fi
+
+      - name: Test Site
+        run: |
+          if [[ -n $SPEC_TEST ]]; then
+            bash tools/test.sh -d "$SPEC_TEST"
+          else
+            bash tools/test.sh
+          fi
+
+      - name: Deploy
+        run: |
+          bash tools/deploy.sh
